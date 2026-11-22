@@ -36,9 +36,20 @@ def _normalize_origin(parsed):
     return f"{scheme}://{netloc}"
 
 
-def _require_public_web_host(hostname, port):
-    if port not in (None, 80, 443):
-        raise PermissionError("For open-scope checks, only standard HTTP/HTTPS ports 80 and 443 are allowed.")
+def _require_public_web_host(hostname, port, config):
+    # Non-standard web ports are permitted only as exact host:port pairs in
+    # config/scope.json. This avoids opening arbitrary ports on every public host.
+    custom_pairs = {
+        (str(item.get("host", "")).lower().rstrip("."), int(allowed_port))
+        for item in config.get("allowed_host_ports", [])
+        if isinstance(item, dict)
+        for allowed_port in item.get("ports", [])
+    }
+    if port not in (None, 80, 443) and (hostname.lower().rstrip("."), port) not in custom_pairs:
+        raise PermissionError(
+            "This port is not enabled for this host. Standard ports 80/443 are open; "
+            "non-standard web ports must be explicitly listed under allowed_host_ports in config/scope.json."
+        )
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost"):
         raise PermissionError("Open-scope mode cannot target localhost or local network services.")
     try:
@@ -122,7 +133,7 @@ def scan_website(target: str, scope_file: Path) -> dict:
     if not explicitly_allowed and not config.get("allow_any_public_origin", False):
         raise PermissionError(f"Origin is not allowlisted: {origin}. Add it to config/scope.json only if you own or are authorized to test it.")
     if not explicitly_allowed:
-        _require_public_web_host(parsed.hostname, parsed.port)
+        _require_public_web_host(parsed.hostname, parsed.port, config)
 
     target_url = origin + requested_path
     status, headers, _ = _get(target_url, origin)

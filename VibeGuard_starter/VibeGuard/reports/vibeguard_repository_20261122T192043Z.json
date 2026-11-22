@@ -1,0 +1,30 @@
+{
+  "scanner": "VibeGuard",
+  "scan_type": "repository",
+  "target": "/mnt/data/VibeGuard/demo",
+  "files_scanned": 2,
+  "findings": [
+    {
+      "severity": "high",
+      "category": "possible_secret",
+      "title": "OpenAI-style secret",
+      "file": "index.html",
+      "line": 9,
+      "evidence": "sk-p\u2026890",
+      "recommendation": "Confirm whether this is a real credential. If exposed, revoke/rotate it, remove it from the client bundle and Git history where appropriate, then load it from a server-side environment variable."
+    },
+    {
+      "severity": "high",
+      "category": "possible_secret",
+      "title": "Supabase secret key",
+      "file": "index.html",
+      "line": 10,
+      "evidence": "sb_s\u2026789",
+      "recommendation": "Confirm whether this is a real credential. If exposed, revoke/rotate it, remove it from the client bundle and Git history where appropriate, then load it from a server-side environment variable."
+    }
+  ],
+  "notes": [
+    "Pattern matches are indicators, not proof that a credential is valid.",
+    "No discovered credential was used or transmitted."
+  ]
+}

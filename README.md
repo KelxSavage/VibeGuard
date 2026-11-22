@@ -126,3 +126,15 @@ No automatic fixes, key rotation, Git history rewrite, or database changes occur
 - `tasks/`: Windows daily scan scripts
 - `tests/`: automated regression tests
 - `.github/workflows/`: GitHub Actions tests
+
+### Non-standard ports for authorized training labs
+
+Open-scope mode permits normal HTTP/HTTPS ports 80 and 443 on public hosts. A non-standard web port must be enabled as an exact hostname + port pair in `config/scope.json`, under `allowed_host_ports`. The starter configuration includes Pentest-Ground's published HTTP(S) lab ports only: 81, 4280, 5013, 7001, and 9000. This does not enable arbitrary ports on arbitrary hosts.
+
+Example target inputs:
+
+- `https://pentest-ground.com:4280/`
+- `https://pentest-ground.com:5013/`
+- `https://pentest-ground.com:9000/`
+
+VibeGuard's website scanner only makes bounded HTTP(S) GET requests. It does not speak raw TCP protocols, so Redis on port 6379 is not supported by this scanner. Keep testing within the lab provider's published rules.

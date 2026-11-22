@@ -3,11 +3,39 @@ import tempfile
 import unittest
 from pathlib import Path
 from urllib.error import URLError
+from unittest.mock import patch
 
 from scanners.secrets import scan_api_auth_patterns
-from scanners.website import _SameOriginRedirects
+from scanners.website import _SameOriginRedirects, _require_public_web_host
 from engine.change_tracker import annotate_changes
 from engine.reporter import save_report
+
+
+class CustomPortScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.config = {"allowed_host_ports": [
+            {"host": "pentest-ground.com", "ports": [81, 4280, 5013, 7001, 9000]}
+        ]}
+
+    @patch("scanners.website.socket.getaddrinfo")
+    def test_allows_explicit_lab_host_and_port(self, resolver):
+        resolver.return_value = [(None, None, None, None, ("178.79.134.182", 0))]
+        _require_public_web_host("pentest-ground.com", 4280, self.config)
+        resolver.assert_called_once()
+
+    def test_rejects_unlisted_port(self):
+        with self.assertRaisesRegex(PermissionError, "non-standard web ports"):
+            _require_public_web_host("pentest-ground.com", 8443, self.config)
+
+    def test_rejects_listed_port_on_different_host(self):
+        with self.assertRaisesRegex(PermissionError, "non-standard web ports"):
+            _require_public_web_host("other.example", 4280, self.config)
+
+    @patch("scanners.website.socket.getaddrinfo")
+    def test_rejects_private_resolution_even_for_lab_port(self, resolver):
+        resolver.return_value = [(None, None, None, None, ("127.0.0.1", 0))]
+        with self.assertRaisesRegex(PermissionError, "private, local, or reserved"):
+            _require_public_web_host("pentest-ground.com", 4280, self.config)
 
 
 class ApiHeuristicTests(unittest.TestCase):
