@@ -19,7 +19,7 @@ EXPOSED_PATHS = [
     "/.env", "/.git/config", "/.git/HEAD", "/.DS_Store", "/backup.zip",
     "/backup.sql", "/config.json", "/config.env", "/debug.log", "/phpinfo.php"
 ]
-USER_AGENT = "VibeGuard/0.4 authorized passive security check"
+USER_AGENT = "VibeGuard/0.5 authorized passive security check"
 
 
 def _normalize_origin(parsed):
@@ -29,6 +29,8 @@ def _normalize_origin(parsed):
         port = parsed.port
     except ValueError as exc:
         raise ValueError("Website URL contains an invalid port.") from exc
+    if port == 0:
+        raise ValueError("Website URL port must be between 1 and 65535.")
     if port == (443 if scheme == "https" else 80):
         port = None
     hostpart = f"[{hostname}]" if ":" in hostname else hostname
@@ -36,19 +38,31 @@ def _normalize_origin(parsed):
     return f"{scheme}://{netloc}"
 
 
-def _require_public_web_host(hostname, port, config):
-    # Non-standard web ports are permitted only as exact host:port pairs in
-    # config/scope.json. This avoids opening arbitrary ports on every public host.
-    custom_pairs = {
-        (str(item.get("host", "")).lower().rstrip("."), int(allowed_port))
-        for item in config.get("allowed_host_ports", [])
-        if isinstance(item, dict)
-        for allowed_port in item.get("ports", [])
+def _authorized_hosts(config):
+    """Return normalized hostnames authorized for non-standard HTTP(S) ports.
+
+    `allowed_host_ports` is read for backward compatibility with 0.4.1 configs.
+    In 0.5, each hostname authorizes all ports for this HTTP(S)-only scanner.
+    """
+    hosts = {
+        str(host).strip().lower().rstrip(".")
+        for host in config.get("authorized_hosts", [])
+        if isinstance(host, str) and host.strip()
     }
-    if port not in (None, 80, 443) and (hostname.lower().rstrip("."), port) not in custom_pairs:
+    for item in config.get("allowed_host_ports", []):
+        if isinstance(item, dict) and isinstance(item.get("host"), str):
+            hosts.add(item["host"].strip().lower().rstrip("."))
+    return hosts
+
+
+def _require_public_web_host(hostname, port, config):
+    hostname = hostname.lower().rstrip(".")
+    # Standard web ports are available for public hosts in open-scope mode.
+    # Any non-standard port requires the hostname to be explicitly authorized.
+    if port not in (None, 80, 443) and hostname not in _authorized_hosts(config):
         raise PermissionError(
-            "This port is not enabled for this host. Standard ports 80/443 are open; "
-            "non-standard web ports must be explicitly listed under allowed_host_ports in config/scope.json."
+            "This hostname is not authorized for non-standard ports. Add it under "
+            "Authorized hosts in the VibeGuard dashboard before scanning."
         )
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost"):
         raise PermissionError("Open-scope mode cannot target localhost or local network services.")

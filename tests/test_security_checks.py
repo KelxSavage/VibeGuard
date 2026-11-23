@@ -13,29 +13,50 @@ from engine.reporter import save_report
 
 class CustomPortScopeTests(unittest.TestCase):
     def setUp(self):
-        self.config = {"allowed_host_ports": [
-            {"host": "pentest-ground.com", "ports": [81, 4280, 5013, 7001, 9000]}
-        ]}
+        self.config = {"authorized_hosts": ["pentest-ground.com"]}
 
     @patch("scanners.website.socket.getaddrinfo")
-    def test_allows_explicit_lab_host_and_port(self, resolver):
+    def test_authorized_host_allows_arbitrary_nonstandard_http_port(self, resolver):
         resolver.return_value = [(None, None, None, None, ("178.79.134.182", 0))]
         _require_public_web_host("pentest-ground.com", 4280, self.config)
-        resolver.assert_called_once()
+        _require_public_web_host("pentest-ground.com", 8443, self.config)
+        _require_public_web_host("pentest-ground.com", 65535, self.config)
+        self.assertEqual(resolver.call_count, 3)
 
-    def test_rejects_unlisted_port(self):
-        with self.assertRaisesRegex(PermissionError, "non-standard web ports"):
-            _require_public_web_host("pentest-ground.com", 8443, self.config)
-
-    def test_rejects_listed_port_on_different_host(self):
-        with self.assertRaisesRegex(PermissionError, "non-standard web ports"):
-            _require_public_web_host("other.example", 4280, self.config)
+    def test_rejects_nonstandard_port_for_unlisted_host(self):
+        with self.assertRaisesRegex(PermissionError, "not authorized"):
+            _require_public_web_host("other.example", 8443, self.config)
 
     @patch("scanners.website.socket.getaddrinfo")
-    def test_rejects_private_resolution_even_for_lab_port(self, resolver):
+    def test_standard_ports_remain_available_for_public_hosts(self, resolver):
+        resolver.return_value = [(None, None, None, None, ("93.184.216.34", 0))]
+        _require_public_web_host("other.example", 80, self.config)
+        _require_public_web_host("other.example", 443, self.config)
+
+    @patch("scanners.website.socket.getaddrinfo")
+    def test_rejects_private_resolution_even_for_authorized_host(self, resolver):
         resolver.return_value = [(None, None, None, None, ("127.0.0.1", 0))]
         with self.assertRaisesRegex(PermissionError, "private, local, or reserved"):
             _require_public_web_host("pentest-ground.com", 4280, self.config)
+
+    def test_reads_legacy_041_host_entries(self):
+        legacy = {"allowed_host_ports": [{"host": "Pentest-Ground.com", "ports": [4280]}]}
+        from scanners.website import _authorized_hosts
+        self.assertIn("pentest-ground.com", _authorized_hosts(legacy))
+
+
+class DashboardHostManagerTests(unittest.TestCase):
+
+    def test_rejects_url_instead_of_hostname(self):
+        from engine.scope import normalize_authorized_hostname
+        with self.assertRaises(ValueError):
+            normalize_authorized_hostname("https://lab.example.com:8443/path")
+
+    def test_rejects_localhost_and_ip_addresses(self):
+        from engine.scope import normalize_authorized_hostname
+        for value in ("localhost", "127.0.0.1", "192.168.1.10"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_authorized_hostname(value)
 
 
 class ApiHeuristicTests(unittest.TestCase):

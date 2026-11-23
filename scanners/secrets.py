@@ -1,4 +1,5 @@
 import re
+import json
 from pathlib import Path
 
 # Heuristic detectors only. Values are never copied into reports.
@@ -20,6 +21,11 @@ TEXT_EXTENSIONS = {
     ".php", ".rb", ".sql", ".map", ".conf", ".properties"
 }
 MAX_FILE_BYTES = 5_000_000
+PRODUCTION_EXCLUDED_DIRS = {
+    "tests", "test", "testing", "examples", "example", "demo", "docs", "documentation",
+    "archive", "archives", "backups", "backup", "dist", "build", "coverage", "reports",
+    "node_modules", ".venv", "venv", ".git", "__pycache__", ".next", ".tox"
+}
 
 def _redact(value: str) -> str:
     if len(value) <= 8:
@@ -30,11 +36,14 @@ def _finding(title, severity, category, file, line, evidence, recommendation):
     return {"severity": severity, "category": category, "title": title, "file": file,
             "line": line, "evidence": evidence, "recommendation": recommendation}
 
-def scan_repository(root: Path) -> dict:
+def _scan_repository_content(root: Path, profile: str = "comprehensive") -> dict:
     findings, scanned, frontend_files = [], 0, 0
     root = root.resolve()
     for path in root.rglob("*"):
-        if not path.is_file() or any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        parts = path.relative_to(root).parts
+        if not path.is_file() or any(part in SKIP_DIRS for part in parts):
+            continue
+        if profile == "production" and any(part.lower() in PRODUCTION_EXCLUDED_DIRS for part in parts[:-1]):
             continue
         if path.suffix.lower() not in TEXT_EXTENSIONS and path.name not in {".env", "Dockerfile"}:
             continue
@@ -69,12 +78,11 @@ def scan_repository(root: Path) -> dict:
                     "Source map contains embedded source content", "low", "source_map_exposure", rel, line_no,
                     "Source map includes sourcesContent", "Review whether original source includes sensitive comments, internal endpoints, or accidentally embedded credentials; do not publish maps containing secrets."
                 ))
-    findings.extend(scan_git_history(root))
-    findings.extend(scan_supabase_sql(root))
-    findings.extend(scan_api_auth_patterns(root))
+    findings.extend(scan_supabase_sql(root, profile))
+    findings.extend(scan_api_auth_patterns(root, profile))
     findings.extend(scan_dependencies(root))
     return {
-        "scanner": "VibeGuard", "scan_type": "repository_comprehensive", "target": str(root),
+        "scanner": "VibeGuard", "scan_type": "repository_" + profile, "target": str(root),
         "files_scanned": scanned, "frontend_files_inspected": frontend_files,
         "findings": _dedupe(findings),
         "notes": [
@@ -127,10 +135,10 @@ def scan_git_history(root: Path):
                                  "Git command unavailable or scan timed out", "Install Git or run the repository scan again on a smaller repository."))
     return findings
 
-def scan_supabase_sql(root: Path):
+def scan_supabase_sql(root: Path, profile: str = "comprehensive"):
     findings = []
     sql_files = list(root.rglob("*.sql"))
-    sql_files = [p for p in sql_files if not any(x in SKIP_DIRS for x in p.relative_to(root).parts)]
+    sql_files = [p for p in sql_files if not any(x in SKIP_DIRS for x in p.relative_to(root).parts) and not (profile == "production" and any(x.lower() in PRODUCTION_EXCLUDED_DIRS for x in p.relative_to(root).parts[:-1]))]
     if not sql_files:
         return [_finding("No SQL migrations found for Supabase RLS review", "info", "supabase_rls",
                          None, None, "No .sql files found", "Add or select the Supabase migrations directory. This is not proof that RLS is disabled.")]
@@ -161,11 +169,11 @@ def scan_supabase_sql(root: Path):
                 "Review whether the policy intentionally permits every caller. Prefer ownership, role, and record-state predicates."))
     return findings
 
-def scan_api_auth_patterns(root: Path):
+def scan_api_auth_patterns(root: Path, profile: str = "comprehensive"):
     findings = []
     route_ext = {".py", ".js", ".ts", ".jsx", ".tsx"}
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in route_ext or any(x in SKIP_DIRS for x in path.relative_to(root).parts):
+        if not path.is_file() or path.suffix.lower() not in route_ext or any(x in SKIP_DIRS for x in path.relative_to(root).parts) or (profile == "production" and any(x.lower() in PRODUCTION_EXCLUDED_DIRS for x in path.relative_to(root).parts[:-1])):
             continue
         try:
             if path.stat().st_size > MAX_FILE_BYTES: continue
@@ -193,7 +201,7 @@ def scan_api_auth_patterns(root: Path):
                 "Verify token signatures, issuer, audience, expiry, and algorithm using a trusted authentication library. Decoding alone is not authentication."))
     # Supabase Edge Function JWT verification configuration.
     for cfg in root.rglob("config.toml"):
-        if any(x in SKIP_DIRS for x in cfg.relative_to(root).parts): continue
+        if any(x in SKIP_DIRS for x in cfg.relative_to(root).parts) or (profile == "production" and any(x.lower() in PRODUCTION_EXCLUDED_DIRS for x in cfg.relative_to(root).parts[:-1])): continue
         try: cfg_text=cfg.read_text(encoding="utf-8",errors="ignore")
         except OSError: continue
         if re.search(r"(?im)^\s*verify_jwt\s*=\s*false\s*$",cfg_text):
@@ -247,3 +255,70 @@ def scan_dependencies(root: Path):
             findings.append(_finding("Python dependency audit could not complete", "info", "dependency_audit",
                 "requirements.txt", None, "Audit timed out or returned unreadable JSON", "Run pip-audit manually and review the output."))
     return findings
+
+
+# V0.6 shared finding identity and review state.
+def finding_fingerprint(item: dict) -> str:
+    import hashlib
+    # Exclude path/line so identical detections in copied snapshots collapse together.
+    stable = "|".join(str(item.get(k) or "").strip().lower() for k in ("category", "title", "evidence"))
+    return hashlib.sha256(stable.encode("utf-8", errors="replace")).hexdigest()[:20]
+
+def deduplicate_findings(items: list[dict]) -> list[dict]:
+    grouped = {}
+    for original in items:
+        item = dict(original)
+        fp = finding_fingerprint(item)
+        if fp not in grouped:
+            item["fingerprint"] = fp
+            item["occurrences"] = [{"file": item.get("file"), "line": item.get("line")}]
+            item["occurrence_count"] = 1
+            grouped[fp] = item
+        else:
+            current = grouped[fp]
+            occurrence = {"file": item.get("file"), "line": item.get("line")}
+            if occurrence not in current["occurrences"]:
+                current["occurrences"].append(occurrence)
+                current["occurrence_count"] += 1
+    return list(grouped.values())
+
+def apply_suppressions(findings: list[dict], suppression_file: Path) -> tuple[list[dict], list[dict]]:
+    try:
+        data = json.loads(suppression_file.read_text(encoding="utf-8"))
+        rules = data.get("suppressions", []) if isinstance(data, dict) else []
+    except (OSError, json.JSONDecodeError):
+        rules = []
+    active, suppressed = [], []
+    for item in findings:
+        rule = next((r for r in rules if r.get("fingerprint") == item.get("fingerprint") and r.get("enabled", True)), None)
+        if rule:
+            hidden = dict(item)
+            hidden["suppression_reason"] = rule.get("reason", "No reason supplied")
+            suppressed.append(hidden)
+        else:
+            active.append(item)
+    return active, suppressed
+
+def scan_repository(root: Path, profile: str = "comprehensive", suppression_file: Path | None = None) -> dict:
+    if profile not in {"production", "comprehensive", "git_history"}:
+        raise ValueError("Unknown scan profile. Choose production, comprehensive, or git_history.")
+    root = root.resolve()
+    if profile == "git_history":
+        findings = scan_git_history(root)
+        result = {"scanner": "VibeGuard", "scan_type": "repository_git_history", "target": str(root),
+                  "files_scanned": 0, "frontend_files_inspected": 0, "findings": findings,
+                  "notes": ["Git history profile scans reachable commits and is read-only.",
+                            "Credential matches are heuristic. Rotate confirmed credentials before considering coordinated history cleanup.",
+                            "No checkout, reset, push, or repository mutation is performed."]}
+    else:
+        result = _scan_repository_content(root, profile)
+        result["notes"] = [n for n in result.get("notes", []) if "Git history scanning" not in n]
+        result["notes"].append("Git history is a separate profile. Run it explicitly to inspect historical commits.")
+    result["findings"] = deduplicate_findings(result.get("findings", []))
+    result["suppressed_findings"] = []
+    if suppression_file:
+        result["findings"], result["suppressed_findings"] = apply_suppressions(result["findings"], suppression_file)
+    result["profile"] = profile
+    result["finding_summary"] = {"active": len(result["findings"]), "suppressed": len(result["suppressed_findings"]),
+                                  "unique_before_suppression": len(result["findings"]) + len(result["suppressed_findings"])}
+    return result

@@ -1,4 +1,4 @@
-# VibeGuard
+# VibeGuard 0.5
 
 **Local-first security review console for code repositories and authorized websites.** VibeGuard combines static source checks with bounded, passive website checks. The dashboard runs on your own computer and stores reports locally.
 
@@ -13,6 +13,7 @@
 - Supabase SQL/RLS and database-grant heuristics, plus a separate read-only SQL audit script.
 - API static heuristics for authentication markers, object-level authorization, JWT verification, wildcard CORS, and Supabase Edge Function JWT settings.
 - Website checks for response headers, HTTPS, and common exposed files.
+- Dashboard-based authorized-host manager with host-wide non-standard HTTP(S) port permissions.
 - JSON and Markdown reports with change tracking for new, resolved, and persistent findings.
 - Optional Windows Task Scheduler integration for daily repository scans.
 
@@ -51,7 +52,9 @@ Query strings and fragments are intentionally rejected so secrets in URLs are no
 
 ## Website scope configuration
 
-`config/scope.json` is configured for any **public** HTTP(S) website on standard ports 80 and 443:
+Manage authorized hosts from the dashboard using **Manage authorized hosts and ports**. Add a DNS hostname once and VibeGuard permits its HTTP(S) scanner to check any port on that hostname. Standard ports 80 and 443 remain available for public hosts when open-scope mode is enabled.
+
+The configuration is stored in `config/scope.json`:
 
 ```json
 {
@@ -59,17 +62,23 @@ Query strings and fragments are intentionally rejected so secrets in URLs are no
   "allowed_origins": [
     "http://127.0.0.1:8765",
     "http://localhost:8765"
+  ],
+  "authorized_hosts": [
+    "pentest-ground.com"
   ]
 }
 ```
 
-- `allow_any_public_origin: true` allows public hosts without adding each domain.
-- `allowed_origins` is only for explicit exceptions such as the bundled local demo. It can remain unchanged.
-- Open scope blocks localhost and private, link-local, and reserved IP destinations, except for exact entries in the explicit allowlist.
-- Only ports 80 and 443 are accepted in open-scope mode.
+- `allow_any_public_origin: true` allows public hosts on standard HTTP/HTTPS ports 80 and 443.
+- `authorized_hosts` allows non-standard HTTP(S) ports on each listed hostname. This is host-wide permission, not a port-specific allowlist.
+- `allowed_origins` retains exact-origin exceptions such as the bundled local demo.
+- Older 0.4.1 `allowed_host_ports` entries are read for backward compatibility and are migrated to the host-wide list when you add a host in the dashboard.
+- Localhost and private, link-local, or reserved IP destinations remain blocked in public-host mode, even for an authorized hostname.
 - Redirects are followed only when they remain on the same origin; cross-origin redirects are blocked.
 
-To disable open public scope, set `allow_any_public_origin` to `false`. Then only exact origins listed in `allowed_origins` are accepted.
+Only add systems you own or have explicit permission to assess. Host authorization does not itself grant permission from the system owner.
+
+To disable open public scope, set `allow_any_public_origin` to `false`. Then only exact origins listed in `allowed_origins` are accepted by the website scanner.
 
 ## Scan a local repository
 
@@ -127,14 +136,25 @@ No automatic fixes, key rotation, Git history rewrite, or database changes occur
 - `tests/`: automated regression tests
 - `.github/workflows/`: GitHub Actions tests
 
-### Non-standard ports for authorized training labs
+### Host-wide port permissions and protocol limits
 
-Open-scope mode permits normal HTTP/HTTPS ports 80 and 443 on public hosts. A non-standard web port must be enabled as an exact hostname + port pair in `config/scope.json`, under `allowed_host_ports`. The starter configuration includes Pentest-Ground's published HTTP(S) lab ports only: 81, 4280, 5013, 7001, and 9000. This does not enable arbitrary ports on arbitrary hosts.
+VibeGuard 0.5 authorizes non-standard ports by hostname through the dashboard. Once a host is listed, the website scanner can make its bounded HTTP(S) GET checks on any port from 1 through 65535. The scanner still speaks HTTP(S) only. It does not speak raw TCP protocols such as Redis, SSH, PostgreSQL, or SMTP; listing a host does not add support for those protocols. Keep testing within the target owner's published rules.
 
-Example target inputs:
 
-- `https://pentest-ground.com:4280/`
-- `https://pentest-ground.com:5013/`
-- `https://pentest-ground.com:9000/`
+## V0.6 scan profiles
 
-VibeGuard's website scanner only makes bounded HTTP(S) GET requests. It does not speak raw TCP protocols, so Redis on port 6379 is not supported by this scanner. Keep testing within the lab provider's published rules.
+Run repository scans with one of three profiles:
+
+```powershell
+python main.py scan-repo C:\Projects\my-app --profile production
+python main.py scan-repo C:\Projects\my-app --profile comprehensive
+python main.py scan-repo C:\Projects\my-app --profile git_history
+```
+
+- `production` scans deployable application files and excludes common test, demo, documentation, backup, and archive directories. Review the exclusion list in `scanners/secrets.py` for your project layout.
+- `comprehensive` scans the current project tree, including tests, demos, docs, and archived copies, while skipping generated/cache/dependency directories.
+- `git_history` scans reachable Git commit patches only. It does not check out files or modify Git history.
+
+V0.6 deduplicates equivalent detections across copied files and records their occurrence locations. A finding fingerprint is stable for category, title, and redacted evidence, not its file path. The local `config/suppressions.json` file supports explicit fingerprint-based suppressions with a reason. Suppressed findings remain visible in reports and are excluded from the active count. Do not suppress a finding until you have verified that it is a false positive or accepted risk.
+
+The production profile is a practical filter, not proof that excluded folders are harmless. Comprehensive and Git history profiles should be run before releases and after major repository changes.

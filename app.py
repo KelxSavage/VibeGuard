@@ -7,6 +7,7 @@ from scanners.secrets import scan_repository
 from scanners.website import scan_website
 from engine.reporter import save_report
 from engine.change_tracker import annotate_changes
+from engine.scope import normalize_authorized_hostname
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR, SCOPE_FILE = BASE_DIR/"reports", BASE_DIR/"config"/"scope.json"
@@ -51,10 +52,11 @@ def scan_repo():
     try:
         target=Path(raw).expanduser().resolve(strict=True)
         if not target.is_dir(): raise ValueError("Path must be a folder.")
-        result=scan_repository(target)
+        profile=request.form.get("profile", "comprehensive")
+        result=scan_repository(target, profile=profile, suppression_file=BASE_DIR/"config"/"suppressions.json")
         result=annotate_changes(result,REPORTS_DIR)
         jp,_=save_report(result,REPORTS_DIR)
-        flash(f"Comprehensive repository scan complete: {len(result['findings'])} finding(s).","success")
+        flash(f"{profile.replace('_', ' ').title()} scan complete: {len(result['findings'])} active finding(s), {len(result.get('suppressed_findings', []))} suppressed.","success")
         return redirect(url_for("view_report",filename=jp.name))
     except (OSError,RuntimeError,ValueError) as exc:
         flash(f"Repository scan failed: {exc}","error"); return redirect(url_for("dashboard"))
@@ -87,18 +89,77 @@ def download_report(filename):
     if not md.is_file(): abort(404)
     return send_file(md, as_attachment=True, download_name=md.name, mimetype="text/markdown")
 
+def read_scope_config():
+    try:
+        return json.loads(SCOPE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"allow_any_public_origin": False, "allowed_origins": [], "authorized_hosts": []}
+
+
+def write_scope_config(config):
+    SCOPE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = SCOPE_FILE.with_suffix(".json.tmp")
+    temp_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    temp_file.replace(SCOPE_FILE)
+
+
 @app.get("/scope")
 def scope():
+    scope_data = read_scope_config()
+    origins = scope_data.get("allowed_origins", [])
+    hosts = set(scope_data.get("authorized_hosts", []))
+    # Migrate legacy 0.4.1 host:port entries into the host-wide 0.5 view.
+    for item in scope_data.get("allowed_host_ports", []):
+        if isinstance(item, dict) and item.get("host"):
+            hosts.add(str(item["host"]).lower().rstrip("."))
+    return render_template("scope.html", origins=origins,
+        open_scope=bool(scope_data.get("allow_any_public_origin", False)),
+        authorized_hosts=sorted(hosts))
+
+
+@app.post("/scope/hosts/add")
+def add_authorized_host():
     try:
-        scope_data=json.loads(SCOPE_FILE.read_text(encoding="utf-8"))
-        origins=scope_data.get("allowed_origins",[])
-        open_scope=bool(scope_data.get("allow_any_public_origin", False))
-    except (OSError,json.JSONDecodeError):
-        origins=[]; open_scope=False
-    return render_template("scope.html",origins=origins,open_scope=open_scope)
+        host = normalize_authorized_hostname(request.form.get("host", ""))
+        config = read_scope_config()
+        hosts = set(config.get("authorized_hosts", []))
+        for item in config.get("allowed_host_ports", []):
+            if isinstance(item, dict) and item.get("host"):
+                hosts.add(str(item["host"]).lower().rstrip("."))
+        if host in hosts:
+            flash(f"{host} is already authorized.", "error")
+        else:
+            hosts.add(host)
+            config["authorized_hosts"] = sorted(hosts)
+            config.pop("allowed_host_ports", None)
+            write_scope_config(config)
+            flash(f"Authorized {host} for HTTP(S) checks on any port.", "success")
+    except (ValueError, OSError) as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("scope"))
+
+
+@app.post("/scope/hosts/remove")
+def remove_authorized_host():
+    host = request.form.get("host", "").strip().lower().rstrip(".")
+    config = read_scope_config()
+    hosts = set(config.get("authorized_hosts", []))
+    hosts.discard(host)
+    # Removing a host also removes any legacy 0.4.1 port entries for it.
+    config["authorized_hosts"] = sorted(hosts)
+    config["allowed_host_ports"] = [
+        item for item in config.get("allowed_host_ports", [])
+        if not isinstance(item, dict) or str(item.get("host", "")).lower().rstrip(".") != host
+    ]
+    try:
+        write_scope_config(config)
+        flash(f"Removed {host} from authorized hosts.", "success")
+    except OSError as exc:
+        flash(f"Could not update scope configuration: {exc}", "error")
+    return redirect(url_for("scope"))
 
 if __name__=="__main__":
     def open_ui(): time.sleep(1); webbrowser.open("http://127.0.0.1:5055")
     threading.Thread(target=open_ui,daemon=True).start()
-    print("VibeGuard 0.3 dashboard: http://127.0.0.1:5055 (loopback only)")
+    print("VibeGuard 0.5 dashboard: http://127.0.0.1:5055 (loopback only)")
     app.run(host="127.0.0.1",port=5055,debug=False,use_reloader=False)

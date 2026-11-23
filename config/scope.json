@@ -4,16 +4,7 @@
     "http://127.0.0.1:8765",
     "http://localhost:8765"
   ],
-  "allowed_host_ports": [
-    {
-      "host": "pentest-ground.com",
-      "ports": [
-        81,
-        4280,
-        5013,
-        7001,
-        9000
-      ]
-    }
+  "authorized_hosts": [
+    "pentest-ground.com"
   ]
 }

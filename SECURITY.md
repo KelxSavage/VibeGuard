@@ -14,3 +14,8 @@ Please do not publish exploit details or secrets in a public issue. Contact the 
 - Open-scope website checks reject private, local, link-local, and reserved destinations and restrict ports to 80/443.
 - Website checks use bounded GET requests, do not crawl, and block cross-origin redirects.
 - Repository and website scans are read-only. VibeGuard does not rotate credentials, rewrite Git history, or modify databases.
+
+
+## Authorized host scope
+
+The dashboard's authorized-host list grants the HTTP(S) website scanner permission to connect to any port on each listed hostname. Add only hosts you own or are explicitly authorized to assess. The scanner blocks local/private/reserved destination addresses in public-host mode and restricts redirects to the original origin. This feature does not support raw TCP protocols.

@@ -27,3 +27,6 @@ instance/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local false-positive decisions; keep project-specific suppressions out of source control
+config/suppressions.json

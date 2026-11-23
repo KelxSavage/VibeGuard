@@ -16,6 +16,8 @@ def main():
 
     repo = sub.add_parser("scan-repo", help="Scan a local source directory for secret-like patterns")
     repo.add_argument("path", help="Directory you own or are authorized to scan")
+    repo.add_argument("--profile", choices=("production", "comprehensive", "git_history"), default="comprehensive",
+                      help="production: deployable app files; comprehensive: broad current tree; git_history: commit history only")
 
     url = sub.add_parser("scan-url", help="Passively inspect one authorized website page or route")
     url.add_argument("url", help="Page URL, e.g. https://example.com/guestbook")
@@ -26,7 +28,7 @@ def main():
         target = Path(args.path).expanduser().resolve()
         if not target.exists() or not target.is_dir():
             parser.error(f"Directory does not exist: {target}")
-        result = scan_repository(target)
+        result = scan_repository(target, profile=args.profile, suppression_file=BASE_DIR / "config" / "suppressions.json")
     else:
         result = scan_website(args.url, BASE_DIR / "config" / "scope.json")
 
